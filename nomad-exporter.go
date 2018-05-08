@@ -41,11 +41,6 @@ var (
 			Name:      "client_api_errors_total",
 			Help:      "Number of errors that this exporter had when querying the API.",
 		})
-	clusterServers = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "raft_peers"),
-		"How many peers (servers) are in the Raft cluster.",
-		nil, nil,
-	)
 	nodeInfo = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "", "node_info"),
 		"Node information",
@@ -356,7 +351,6 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- clientErrors.Desc()
 
 	ch <- nodeInfo
-	ch <- clusterServers
 	ch <- serfLanMembers
 	ch <- serfLanMembersStatus
 	ch <- jobsTotal
@@ -400,9 +394,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		logError(err)
 		return
 	}
-
-	if err := e.collectPeerMetrics(ch); err != nil {
-		logError(err)
+	if !e.shouldReadMetrics() {
 		return
 	}
 
@@ -470,10 +462,6 @@ func (e *Exporter) collectLeader(ch chan<- prometheus.Metric) error {
 }
 
 func (e *Exporter) collectJobsMetrics(ch chan<- prometheus.Metric) error {
-	if !e.shouldReadMetrics() {
-		return nil
-	}
-
 	jobs, _, err := e.client.Jobs().List(&api.QueryOptions{})
 	if err != nil {
 		return fmt.Errorf("could not get jobs: %s", err)
@@ -486,10 +474,6 @@ func (e *Exporter) collectJobsMetrics(ch chan<- prometheus.Metric) error {
 }
 
 func (e *Exporter) collectNodes(ch chan<- prometheus.Metric) error {
-	if !e.shouldReadMetrics() {
-		return nil
-	}
-
 	opts := &api.QueryOptions{}
 
 	nodes, _, err := e.client.Nodes().List(opts)
@@ -499,7 +483,6 @@ func (e *Exporter) collectNodes(ch chan<- prometheus.Metric) error {
 	ch <- prometheus.MustNewConstMetric(
 		serfLanMembers, prometheus.GaugeValue, float64(len(nodes)),
 	)
-	logrus.Debugf("I've the nodes list with %d nodes", len(nodes))
 
 	var w sync.WaitGroup
 
@@ -557,6 +540,13 @@ func (e *Exporter) collectNodes(ch chan<- prometheus.Metric) error {
 					allocatedMemory += *alloc.Resources.MemoryMB
 				}
 
+				nodeStats, err := e.client.Nodes().Stats(a.ID, opts)
+				if err != nil {
+					logError(fmt.Errorf("failed to get node %s stats: %s", node.Name, err))
+					return
+				}
+				logrus.Debugf("Fetched node %s stats", node.Name)
+
 				nodeLabels := []string{node.Name, node.Datacenter}
 				ch <- prometheus.MustNewConstMetric(
 					nodeResourceMemory, prometheus.GaugeValue, float64(*node.Resources.MemoryMB)*1024*1024,
@@ -582,13 +572,6 @@ func (e *Exporter) collectNodes(ch chan<- prometheus.Metric) error {
 					nodeResourceDiskBytes, prometheus.GaugeValue, float64(*node.Resources.DiskMB)*1024*1024,
 					nodeLabels...,
 				)
-
-				nodeStats, err := e.client.Nodes().Stats(a.ID, opts)
-				if err != nil {
-					logError(fmt.Errorf("failed to get node %s stats: %s", node.Name, err))
-					return
-				}
-				logrus.Debugf("Fetched node %s stats", node.Name)
 
 				ch <- prometheus.MustNewConstMetric(
 					nodeUsedMemory, prometheus.GaugeValue, float64(nodeStats.Memory.Used)*1024*1024,
@@ -623,26 +606,7 @@ func (e *Exporter) getRunningAllocs(nodeID string) ([]*api.Allocation, error) {
 	return allocs, err
 }
 
-func (e *Exporter) collectPeerMetrics(ch chan<- prometheus.Metric) error {
-	if !e.shouldReadMetrics() {
-		return nil
-	}
-
-	peers, err := e.client.Status().Peers()
-	if err != nil {
-		return fmt.Errorf("failed to get peer metrics: %s", err)
-	}
-	ch <- prometheus.MustNewConstMetric(
-		clusterServers, prometheus.GaugeValue, float64(len(peers)),
-	)
-	return nil
-}
-
 func (e *Exporter) collectAllocations(ch chan<- prometheus.Metric) error {
-	if !e.shouldReadMetrics() {
-		return nil
-	}
-
 	allocStubs, _, err := e.client.Allocations().List(&api.QueryOptions{})
 	if err != nil {
 		return fmt.Errorf("could not get allocations: %s", err)
@@ -746,10 +710,6 @@ func (e *Exporter) collectAllocations(ch chan<- prometheus.Metric) error {
 }
 
 func (e *Exporter) collectEvalMetrics(ch chan<- prometheus.Metric) error {
-	if !e.shouldReadMetrics() {
-		return nil
-	}
-
 	evals, _, err := e.client.Evaluations().List(&api.QueryOptions{})
 	if err != nil {
 		return fmt.Errorf("could not get evaluation metrics: %s", err)
@@ -766,10 +726,6 @@ func (e *Exporter) collectEvalMetrics(ch chan<- prometheus.Metric) error {
 }
 
 func (e *Exporter) collectDeploymentMetrics(ch chan<- prometheus.Metric) error {
-	if !e.shouldReadMetrics() {
-		return nil
-	}
-
 	deployments, _, err := e.client.Deployments().List(&api.QueryOptions{})
 	if err != nil {
 		return err
